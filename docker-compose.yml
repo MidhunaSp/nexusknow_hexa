@@ -1,0 +1,40 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    volumes:
+      - chroma_data:/app/data/chroma_db
+      - audit_data:/app/data           # keeps audit.db + uploads across restarts
+    restart: unless-stopped
+    # Not published to the host — only the frontend and cloudflared talk to it,
+    # over the internal Docker network, via the service name "backend".
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      - API_URL=http://backend:8000
+    depends_on:
+      - backend
+    ports:
+      - "8501:8501"   # remove this once cloudflared is set up — see DEPLOY.md
+    restart: unless-stopped
+
+  # Optional: exposes the app to the internet without opening any firewall ports,
+  # and (combined with Cloudflare Access) adds real login in front of it.
+  # Leave this commented out until you've created a tunnel — see DEPLOY.md.
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   command: tunnel run
+  #   environment:
+  #     - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+  #   depends_on:
+  #     - frontend
+  #   restart: unless-stopped
+
+volumes:
+  chroma_data:
+  audit_data:

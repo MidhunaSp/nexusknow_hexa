@@ -1,0 +1,19 @@
+# Environment variables (NEVER commit this - contains API keys)
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+*.egg-info/
+
+# Data (user-uploaded content, not source code)
+data/uploads/*
+data/chroma_db/*
+data/audit.db
+!data/uploads/.gitkeep
+!data/chroma_db/.gitkeep
+
+# OS files
+.DS_Store
+Thumbs.db

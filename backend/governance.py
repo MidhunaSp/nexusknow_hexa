@@ -75,9 +75,13 @@ def init_audit_db():
                 tags TEXT NOT NULL,
                 uploaded_by TEXT,
                 uploaded_at TEXT,
-                num_chunks INTEGER
+                num_chunks INTEGER,
+                sample_questions TEXT
             )
         """)
+        existing_doc_cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+        if "sample_questions" not in existing_doc_cols:
+            conn.execute("ALTER TABLE documents ADD COLUMN sample_questions TEXT")
 
 
 def log_query(user_id: str, role: str, query: str, retrieved_doc_ids: list[str],
@@ -94,15 +98,45 @@ def log_query(user_id: str, role: str, query: str, retrieved_doc_ids: list[str],
         )
 
 
-def register_document(doc_id: str, filename: str, tags: list[str], uploaded_by: str, num_chunks: int):
+def register_document(doc_id: str, filename: str, tags: list[str], uploaded_by: str,
+                       num_chunks: int, sample_questions: list[str] = None):
     with _get_db() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO documents
-               (doc_id, filename, tags, uploaded_by, uploaded_at, num_chunks)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (doc_id, filename, tags, uploaded_by, uploaded_at, num_chunks, sample_questions)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (doc_id, filename, json.dumps(tags), uploaded_by,
-             datetime.utcnow().isoformat(), num_chunks)
+             datetime.utcnow().isoformat(), num_chunks, json.dumps(sample_questions or []))
         )
+
+
+def get_all_tags_in_use() -> list[str]:
+    """All distinct tags currently applied to any document — used to inform AI tag suggestions."""
+    tags = set()
+    with _get_db() as conn:
+        rows = conn.execute("SELECT tags FROM documents").fetchall()
+    for row in rows:
+        tags.update(json.loads(row["tags"]))
+    return sorted(tags)
+
+
+def get_sample_questions_for_tags(allowed_tags: list[str], limit: int = 6) -> list[dict]:
+    """Sample questions from documents whose tags intersect allowed_tags (RBAC-aware)."""
+    results = []
+    with _get_db() as conn:
+        rows = conn.execute(
+            "SELECT filename, tags, sample_questions FROM documents ORDER BY uploaded_at DESC"
+        ).fetchall()
+    for row in rows:
+        doc_tags = json.loads(row["tags"])
+        if "*" not in allowed_tags and not any(t in allowed_tags for t in doc_tags):
+            continue
+        questions = json.loads(row["sample_questions"] or "[]")
+        for q in questions:
+            results.append({"question": q, "filename": row["filename"]})
+            if len(results) >= limit:
+                return results
+    return results
 
 
 def get_document_tags(doc_id: str) -> list[str]:

@@ -10,6 +10,12 @@ RAG Engine — Agentic Retrieval (Groq)
 - Full search trace (queries issued + result counts) is returned for the audit log
 - Resilient to Groq's occasional malformed tool-call generation (tool_use_failed): retries,
   then falls back to a plain single-search RAG pass rather than surfacing a 500 to the user
+- Supports short conversation history so follow-up questions ("what about contractors?")
+  resolve correctly instead of being treated as a brand-new, context-free question
+- Runs a lightweight second pass to flag citations whose excerpt doesn't actually
+  support the claim it's attached to
+- Also provides two small, non-critical LLM-assisted helpers used at ingestion time:
+  suggest_tags() and generate_sample_questions()
 """
 import re
 import json
@@ -18,6 +24,8 @@ from backend.config import settings
 from backend.vector_store import semantic_search
 
 client = Groq(api_key=settings.GROQ_API_KEY)
+
+MAX_HISTORY_MESSAGES = 6  # last ~3 user/assistant exchanges
 
 SYSTEM_PROMPT = """You are an enterprise knowledge assistant. You answer employee questions
 using ONLY content retrieved via the search_documents tool. Follow these rules strictly:
@@ -33,6 +41,10 @@ using ONLY content retrieved via the search_documents tool. Follow these rules s
 4. If, after searching, the excerpts don't contain enough information to answer, say so
    clearly — do not guess or fabricate an answer, and do not invent citation numbers.
 5. Be concise and direct. Use plain language suitable for a business audience.
+6. You may be shown a short history of the recent conversation, to understand follow-up
+   questions like "what about contractors?" or "and last quarter?". Use it ONLY to
+   understand what the current question is really asking — you must still ground every
+   claim in freshly retrieved excerpts for the CURRENT question, not in the history text.
 """
 
 SEARCH_TOOL = {
@@ -70,6 +82,32 @@ def _is_tool_use_failed(err: BadRequestError) -> bool:
         return "tool_use_failed" in str(err)
 
 
+def _strip_json_fences(raw: str) -> str:
+    return re.sub(r"^```(json)?|```$", "", raw.strip(), flags=re.MULTILINE).strip()
+
+
+def _history_to_messages(history: list[dict] | None) -> list[dict]:
+    """
+    Cleans up client-supplied conversation history for inclusion in the prompt:
+    - keeps only the last MAX_HISTORY_MESSAGES entries
+    - keeps only role/content (drops citations, tool-call plumbing, etc.)
+    - strips [n] citation markers from prior assistant turns, since those markers
+      referred to a citation registry that no longer exists for this new turn
+    """
+    if not history:
+        return []
+    cleaned = []
+    for h in history[-MAX_HISTORY_MESSAGES:]:
+        role = h.get("role")
+        content = (h.get("content") or "").strip()
+        if role not in ("user", "assistant") or not content:
+            continue
+        if role == "assistant":
+            content = re.sub(r"\[\d+\]", "", content)
+        cleaned.append({"role": role, "content": content})
+    return cleaned
+
+
 def _format_new_hits(hits: list[dict], start_index: int) -> str:
     """Render newly-retrieved chunks as a numbered excerpt block for the tool result."""
     if not hits:
@@ -98,7 +136,105 @@ def _build_citations(final_text: str, registry: list[dict]) -> list[dict]:
     return citations
 
 
-def _plain_rag_fallback(query: str, allowed_tags: list[str], top_k: int, reason: str) -> dict:
+def verify_citations(answer_text: str, citations: list[dict]) -> list[dict]:
+    """
+    Second-pass check: does each cited excerpt actually support the claim it's
+    attached to in the answer? Adds a "verified" field to each citation:
+    True/False if checked successfully, None if verification itself failed.
+    Never raises — a failed verification pass just leaves citations unchecked
+    rather than blocking the answer.
+    """
+    if not citations:
+        return citations
+
+    excerpt_block = "\n\n".join(f"[{c['marker']}] {c['excerpt']}" for c in citations)
+    prompt = (
+        f"Answer given to a user:\n{answer_text}\n\n"
+        f"Cited source excerpts:\n{excerpt_block}\n\n"
+        "For each numbered citation, judge whether that excerpt genuinely supports the "
+        "specific claim in the answer attached to that citation number. Respond ONLY with "
+        'JSON, no prose, no markdown fences: {"results": [{"marker": 1, "supported": true}]}'
+    )
+    verdicts = {}
+    try:
+        response = client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=300,
+            temperature=0.0,
+        )
+        raw = _strip_json_fences(response.choices[0].message.content or "")
+        data = json.loads(raw)
+        verdicts = {
+            int(r["marker"]): bool(r["supported"])
+            for r in data.get("results", [])
+            if "marker" in r and "supported" in r
+        }
+    except Exception:
+        verdicts = {}
+
+    for c in citations:
+        c["verified"] = verdicts.get(c["marker"], None)
+    return citations
+
+
+def suggest_tags(text_sample: str, known_tags: list[str]) -> dict:
+    """
+    LLM-assisted tag suggestion for the admin upload flow. Non-critical: on any
+    failure, falls back to ["general"] rather than blocking the upload.
+    """
+    known = sorted(set(known_tags) | {"general"})
+    prompt = (
+        "A new document is being uploaded to an enterprise knowledge base. "
+        f"Existing tags in use: {', '.join(known)}.\n\n"
+        f"Document excerpt:\n{text_sample[:2000]}\n\n"
+        "Suggest which existing tag(s) this document belongs to (pick from the list "
+        "above), or propose ONE new short lowercase tag only if none fit at all. "
+        "Respond ONLY with JSON, no prose, no markdown fences: "
+        '{"tags": ["tag1"], "reasoning": "one short sentence"}'
+    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,
+            temperature=0.2,
+        )
+        data = json.loads(_strip_json_fences(response.choices[0].message.content or ""))
+        tags = [t.strip().lower() for t in data.get("tags", []) if isinstance(t, str) and t.strip()]
+        return {"tags": tags or ["general"], "reasoning": data.get("reasoning", "")}
+    except Exception as e:
+        return {"tags": ["general"], "reasoning": f"AI suggestion unavailable ({e}); defaulted to general."}
+
+
+def generate_sample_questions(text_sample: str, n: int = 3) -> list[str]:
+    """
+    LLM-generated example questions for a newly-uploaded document, shown in the
+    Chat tab to make the knowledge base more discoverable. Non-critical: returns
+    an empty list on failure rather than blocking ingestion.
+    """
+    prompt = (
+        f"Here is an excerpt from a company document:\n\n{text_sample[:2000]}\n\n"
+        f"Write exactly {n} short, natural questions an employee might ask that this "
+        "document could answer. Respond ONLY with JSON, no prose, no markdown fences: "
+        '{"questions": ["...", "...", "..."]}'
+    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=250,
+            temperature=0.5,
+        )
+        data = json.loads(_strip_json_fences(response.choices[0].message.content or ""))
+        questions = [q.strip() for q in data.get("questions", []) if isinstance(q, str) and q.strip()]
+        return questions[:n]
+    except Exception:
+        return []
+
+
+def _plain_rag_fallback(query: str, allowed_tags: list[str], top_k: int, reason: str,
+                         history: list[dict] | None = None) -> dict:
     """
     Fallback path used when Groq's tool-calling keeps failing (known Llama tool_use_failed
     flakiness on Groq). Does one direct search + a plain (non-tool) completion instead of
@@ -119,30 +255,33 @@ def _plain_rag_fallback(query: str, allowed_tags: list[str], top_k: int, reason:
         }
 
     excerpt_block = _format_new_hits(hits, 1)
-    fallback_messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": (
-            f"Question: {query}\n\nRetrieved excerpts:\n\n{excerpt_block}\n\n"
-            "Answer the question using only these excerpts, with [n] citation markers."
-        )},
-    ]
+    fallback_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    fallback_messages.extend(_history_to_messages(history))
+    fallback_messages.append({"role": "user", "content": (
+        f"Question: {query}\n\nRetrieved excerpts:\n\n{excerpt_block}\n\n"
+        "Answer the question using only these excerpts, with [n] citation markers."
+    )})
     response = client.chat.completions.create(
         model=settings.GROQ_MODEL, messages=fallback_messages, max_tokens=1024, temperature=0.3,
     )
     final_text = (response.choices[0].message.content or "").strip() or (
         "I wasn't able to find enough authorized information to answer this question."
     )
+    citations = verify_citations(final_text, _build_citations(final_text, hits))
     return {
         "answer": final_text,
-        "citations": _build_citations(final_text, hits),
+        "citations": citations,
         "retrieved_doc_ids": [c["doc_id"] for c in hits],
         "search_trace": search_trace,
     }
 
 
-def answer_query(query: str, allowed_tags: list[str], top_k: int = None) -> dict:
+def answer_query(query: str, allowed_tags: list[str], top_k: int = None,
+                  history: list[dict] | None = None) -> dict:
     """
     Agentic RAG pipeline: model searches (possibly multiple times) -> answers with citations.
+    `history` is an optional list of {"role": "user"/"assistant", "content": str} from the
+    recent conversation, used so follow-up questions resolve correctly.
     Returns the answer, UI citation list, retrieved doc ids (for ACL/audit), and a search trace.
     Falls back to a plain single-search pass if Groq's tool-calling repeatedly fails.
     """
@@ -150,10 +289,9 @@ def answer_query(query: str, allowed_tags: list[str], top_k: int = None) -> dict
     seen_chunk_ids: dict[str, int] = {}
     search_trace: list[dict] = []
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Question: {query}"},
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(_history_to_messages(history))
+    messages.append({"role": "user", "content": f"Question: {query}"})
 
     rounds_used = 0
     final_text = None
@@ -196,7 +334,7 @@ def answer_query(query: str, allowed_tags: list[str], top_k: int = None) -> dict
                     raise
                 continue
         if response is None:
-            return _plain_rag_fallback(query, allowed_tags, top_k, reason=str(last_err))
+            return _plain_rag_fallback(query, allowed_tags, top_k, reason=str(last_err), history=history)
 
         msg = response.choices[0].message
         tool_calls = getattr(msg, "tool_calls", None) or []
@@ -267,9 +405,10 @@ def answer_query(query: str, allowed_tags: list[str], top_k: int = None) -> dict
             "search_trace": search_trace,
         }
 
+    citations = verify_citations(final_text, _build_citations(final_text, registry))
     return {
         "answer": final_text,
-        "citations": _build_citations(final_text, registry),
+        "citations": citations,
         "retrieved_doc_ids": [c["doc_id"] for c in registry],
         "search_trace": search_trace,
     }

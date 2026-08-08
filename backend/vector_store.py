@@ -69,6 +69,33 @@ def add_chunks(chunks: list[dict], tags: list[str]):
     )
 
 
+def update_tags(doc_id: str, tags: list[str]) -> int:
+    """
+    Updates the tags metadata for every chunk belonging to doc_id, in place —
+    no re-embedding needed, and no orphaned duplicate chunks left behind (unlike
+    delete-and-re-upload). Returns the number of chunks updated.
+    """
+    collection = get_collection()
+    existing = collection.get(where={"doc_id": doc_id})
+    ids = existing["ids"]
+    if not ids:
+        return 0
+    new_tags_str = ",".join(tags)
+    updated_metadatas = [{**meta, "tags": new_tags_str} for meta in existing["metadatas"]]
+    collection.update(ids=ids, metadatas=updated_metadatas)
+    return len(ids)
+
+
+def delete_document(doc_id: str) -> int:
+    """Removes every chunk belonging to doc_id from the vector store. Returns count removed."""
+    collection = get_collection()
+    existing = collection.get(where={"doc_id": doc_id})
+    ids = existing["ids"]
+    if ids:
+        collection.delete(ids=ids)
+    return len(ids)
+
+
 def semantic_search(query: str, top_k: int = None, allowed_tags: list[str] = None) -> list[dict]:
     """
     Retrieve the most relevant chunks for a query.

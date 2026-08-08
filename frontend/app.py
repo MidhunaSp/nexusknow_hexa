@@ -12,6 +12,7 @@ still easy to poke at without credentials, but every response from that path is 
 auth_mode: "demo_fallback" in the audit log so it can never be mistaken for a real session.
 """
 import os
+import json
 import streamlit as st
 import requests
 
@@ -91,33 +92,89 @@ logged_in = st.session_state.auth_token is not None
 # active session and demo mode hasn't been explicitly chosen.
 # =========================================================================
 if not logged_in and not st.session_state.demo_mode:
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap');
+
+    .stApp {
+        background: radial-gradient(circle at 50% -10%, #16213A 0%, #0B1220 55%);
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: #121A2B;
+        border: 1px solid #263252 !important;
+        border-radius: 18px;
+        box-shadow: 0 24px 60px -12px rgba(0,0,0,0.5);
+    }
+    .nexus-nodes { display:flex; justify-content:center; margin-bottom: 6px; }
+    .nexus-wordmark {
+        font-family: 'Fraunces', serif; font-weight: 600; font-size: 2.6rem;
+        text-align:center; color:#EDF1F9; margin: 0; letter-spacing: -0.01em;
+    }
+    .nexus-tagline {
+        font-family:'Inter',sans-serif; text-align:center; color:#D9A857;
+        font-size:0.72rem; letter-spacing:0.16em; text-transform:uppercase;
+        margin-top:6px; margin-bottom:2.2rem;
+    }
+    .nexus-eyebrow {
+        font-family:'Inter',sans-serif; font-size:0.7rem; letter-spacing:0.12em;
+        text-transform:uppercase; color:#8A93A8; margin-bottom:2px;
+    }
+    .nexus-subtext { font-family:'Inter',sans-serif; color:#6C7690; font-size:0.85rem; }
+    .nexus-divider {
+        border:none; height:1px; margin: 1.6rem 0 1.1rem 0;
+        background: linear-gradient(to right, transparent, #2C3A5E, transparent);
+    }
+    .stButton>button {
+        font-family:'Inter',sans-serif; font-weight:500; border-radius:10px !important;
+        border:1px solid #2C3A5E !important; background:transparent; color:#D7DDEA;
+    }
+    .stButton>button:hover { border-color:#D9A857 !important; color:#D9A857; }
+    .stButton>button[kind="primary"] {
+        background:#D9A857 !important; border:none !important; color:#1A1305 !important; font-weight:600;
+    }
+    .stButton>button[kind="primary"]:hover { background:#E6BC74 !important; }
+    .stTextInput input, div[data-baseweb="select"] > div {
+        background:#0E1524 !important; border-color:#263252 !important;
+        border-radius:10px !important; color:#EDF1F9 !important;
+    }
+    .streamlit-expanderHeader { font-family:'Inter',sans-serif; color:#8A93A8 !important; font-size:0.85rem; }
+    </style>
+    """, unsafe_allow_html=True)
+
     _, center, _ = st.columns([1, 1.3, 1])
     with center:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown(
-            "<div style='text-align:center;font-size:48px;'>🔗</div>", unsafe_allow_html=True
-        )
-        st.markdown(
-            "<h1 style='text-align:center;margin-bottom:0;'>Nexus Know</h1>", unsafe_allow_html=True
-        )
-        st.markdown(
-            "<p style='text-align:center;color:#888;margin-top:0;'>Every Answer, Sourced.</p>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("---")
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("""
+        <div class="nexus-nodes">
+          <svg width="56" height="28" viewBox="0 0 56 28">
+            <line x1="8" y1="20" x2="28" y2="8" stroke="#D9A857" stroke-width="1.2"/>
+            <line x1="28" y1="8" x2="48" y2="20" stroke="#D9A857" stroke-width="1.2"/>
+            <line x1="8" y1="20" x2="48" y2="20" stroke="#D9A857" stroke-width="1.2" opacity="0.4"/>
+            <circle cx="8" cy="20" r="3.5" fill="#0B1220" stroke="#D9A857" stroke-width="1.4"/>
+            <circle cx="48" cy="20" r="3.5" fill="#0B1220" stroke="#D9A857" stroke-width="1.4"/>
+            <circle cx="28" cy="8" r="4" fill="#D9A857"/>
+          </svg>
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<p class='nexus-wordmark'>Nexus Know</p>", unsafe_allow_html=True)
+        st.markdown("<p class='nexus-tagline'>Every Answer, Sourced</p>", unsafe_allow_html=True)
 
-        st.subheader("Quick demo login")
-        st.caption("Real login, real session — this dropdown just fills in one of the demo accounts for you.")
-        choice = st.selectbox("Demo account", list(DEMO_ACCOUNTS.keys()), label_visibility="collapsed")
-        if st.button("Log in with selected account", type="primary", use_container_width=True):
-            creds = DEMO_ACCOUNTS.get(choice)
-            if creds is None:
-                st.warning("Pick a demo account from the dropdown first.")
-            else:
-                if do_login(*creds):
-                    st.rerun()
+        with st.container(border=True):
+            st.markdown("<p class='nexus-eyebrow'>Quick demo login</p>", unsafe_allow_html=True)
+            st.markdown(
+                "<p class='nexus-subtext'>Real login, real session — this just fills in a demo account for you.</p>",
+                unsafe_allow_html=True,
+            )
+            choice = st.selectbox("Demo account", list(DEMO_ACCOUNTS.keys()), label_visibility="collapsed")
+            if st.button("Log in with selected account", type="primary", use_container_width=True):
+                creds = DEMO_ACCOUNTS.get(choice)
+                if creds is None:
+                    st.warning("Pick a demo account from the dropdown first.")
+                else:
+                    if do_login(*creds):
+                        st.rerun()
 
-        st.markdown("&nbsp;", unsafe_allow_html=True)
+        st.markdown("<div style='height:1.4rem'></div>", unsafe_allow_html=True)
         with st.expander("Or log in manually"):
             m_user = st.text_input("Username", key="manual_user")
             m_pass = st.text_input("Password", type="password", key="manual_pass")
@@ -125,8 +182,8 @@ if not logged_in and not st.session_state.demo_mode:
                 if do_login(m_user, m_pass):
                     st.rerun()
 
-        st.markdown("---")
-        st.caption("Not ready to log in?")
+        st.markdown("<hr class='nexus-divider'/>", unsafe_allow_html=True)
+        st.markdown("<p class='nexus-subtext' style='text-align:center;'>Not ready to log in?</p>", unsafe_allow_html=True)
         if st.button("Continue without logging in (demo mode — not secure)", use_container_width=True):
             st.session_state.demo_mode = True
             st.rerun()
@@ -316,6 +373,39 @@ with tab_upload:
             docs = requests.get(f"{API_URL}/documents").json()["documents"]
             if docs:
                 st.dataframe(docs, use_container_width=True)
+
+                st.markdown("**Fix a document's tags** (e.g. an AI suggestion was too broad)")
+                doc_options = {f"{d['filename']} ({d['doc_id'][:8]}...)": d for d in docs}
+                selected_label = st.selectbox("Document", list(doc_options.keys()), key="retag_doc_select")
+                selected_doc = doc_options[selected_label]
+                current_tags = ", ".join(json.loads(selected_doc["tags"]) if isinstance(selected_doc["tags"], str) else selected_doc["tags"])
+
+                col_retag_input, col_retag_btn, col_delete_btn = st.columns([3, 1, 1])
+                with col_retag_input:
+                    new_tags = st.text_input("New tags (comma-separated)", value=current_tags, key="retag_input")
+                with col_retag_btn:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    if st.button("Update tags", use_container_width=True):
+                        try:
+                            tag_list = [t.strip() for t in new_tags.split(",") if t.strip()]
+                            resp = requests.patch(f"{API_URL}/documents/{selected_doc['doc_id']}/tags",
+                                                   json={"tags": tag_list}, headers=auth_headers(), timeout=30)
+                            resp.raise_for_status()
+                            st.success(f"✅ Updated {resp.json()['chunks_updated']} chunk(s) to tags: {', '.join(tag_list)}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Retag failed: {e}")
+                with col_delete_btn:
+                    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                    if st.button("🗑️ Delete", use_container_width=True):
+                        try:
+                            resp = requests.delete(f"{API_URL}/documents/{selected_doc['doc_id']}",
+                                                    headers=auth_headers(), timeout=30)
+                            resp.raise_for_status()
+                            st.success(f"✅ Deleted {resp.json()['chunks_deleted']} chunk(s)")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Delete failed: {e}")
             else:
                 st.caption("No documents ingested yet.")
         except Exception as e:

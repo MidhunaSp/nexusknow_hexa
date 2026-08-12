@@ -45,10 +45,8 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
-
 class TagUpdateRequest(BaseModel):
     tags: list[str]
-
 
 def resolve_identity(authorization: Optional[str], fallback_user_id: str, fallback_role: str):
     """Shared by /query and /suggested-questions: session wins if present, else demo fallback."""

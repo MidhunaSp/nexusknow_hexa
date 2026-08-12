@@ -109,7 +109,6 @@ def register_document(doc_id: str, filename: str, tags: list[str], uploaded_by: 
              datetime.utcnow().isoformat(), num_chunks, json.dumps(sample_questions or []))
         )
 
-
 def update_document_tags(doc_id: str, tags: list[str]):
     with _get_db() as conn:
         conn.execute("UPDATE documents SET tags = ? WHERE doc_id = ?", (json.dumps(tags), doc_id))
@@ -118,6 +117,8 @@ def update_document_tags(doc_id: str, tags: list[str]):
 def delete_document_record(doc_id: str):
     with _get_db() as conn:
         conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+
+def get_all_tags_in_use() -> list[str]:
     """All distinct tags currently applied to any document — used to inform AI tag suggestions."""
     tags = set()
     with _get_db() as conn:
